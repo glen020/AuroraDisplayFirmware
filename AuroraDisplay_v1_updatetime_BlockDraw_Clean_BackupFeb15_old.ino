@@ -49,8 +49,6 @@ openweather website to check if your city will be first
 
 
 
-
-
 // =====================================================
 // INCLUDES
 // =====================================================
@@ -107,18 +105,10 @@ openweather website to check if your city will be first
 // =====================================================
 
 
-// Check-in UI result state
-static bool g_lastCheckinOk = false;
-static bool g_lastCheckinHadPairing = false;
-static String g_lastPairCode = "";
-
-
-
-
 // Hourly weather attempt budget
-static int g_wxHourKey = -1;  // unique key for current local hour
+static int g_wxHourKey = -1;          // unique key for current local hour
 static uint8_t g_wxAttemptsThisHour = 0;
-static uint32_t g_wxRetryAtMs = 0;                        // when 2nd attempt is allowed
+static uint32_t g_wxRetryAtMs = 0;    // when 2nd attempt is allowed
 static const uint32_t WX_RETRY_DELAY_MS = 90UL * 1000UL;  // retry once after 90s
 
 
@@ -187,10 +177,10 @@ static uint32_t g_weatherPhaseStartMs = 0;  // Time we entered weather phase
 // =====================================================
 
 // CLOCK mode auto-exit timeout (0 = never auto-exit)
-int g_clockModeTimeoutSeconds = 60;
+int g_clockModeTimeoutSeconds = 30;
 
 // ANIM mode auto-exit timeout (0 = never auto-exit)
-int g_animModeTimeoutSeconds = 60;
+int g_animModeTimeoutSeconds = 30;
 
 // Deadline to revert back to UI_WEATHER (0 = no deadline)
 static uint32_t g_uiModeUntilMs = 0;
@@ -229,6 +219,17 @@ static inline void noteNetResult(bool ok, uint32_t blockMs) {
     g_netBackoffUntilMs = millis() + backoff;
   }
 }
+
+
+// =====================================================
+// UI MODE (manual override)
+// =====================================================
+enum UiMode : uint8_t {
+  UI_WEATHER = 0,  // Normal behavior (weather, ads, sleep window)
+  UI_CLOCK = 1,    // Clock-only
+  UI_ANIM = 2      // Animation-only (continuous)
+};
+static UiMode g_uiMode = UI_WEATHER;
 
 
 // =====================================================
@@ -312,7 +313,7 @@ WiFiManagerParameter p_checkinBaseUrl(
   checkinBaseUrlBuf,
   sizeof(checkinBaseUrlBuf));
 
-long g_tzOffsetSeconds = 0;  // dynamic, from OpenWeather
+long g_tzOffsetSeconds = 0; // dynamic, from OpenWeather 
 bool g_hasTzOffset = false;
 
 // =====================================================
@@ -385,7 +386,7 @@ static inline void noteDisplay(const char* name, uint32_t dt) {
 
 
 // Button feature gate: 0 = disabled, 1 = enabled
-#define ENABLE_BUTTON_INPUT 1
+#define ENABLE_BUTTON_INPUT 0
 
 
 // =====================================================
@@ -471,7 +472,7 @@ String g_userCityBackup = "";
 // SLEEP / NIGHT MODE (runtime + WiFiManager)
 // =====================================================
 char sleepEnabledBuf[2] = "1";
-char sleepStartBuf[3] = "3";  //CHANGE
+char sleepStartBuf[3] = "3";//CHANGE
 char sleepEndBuf[3] = "4";
 
 WiFiManagerParameter p_sleepEnabled("sleepEnabled", "Sleep enabled? (1=on,0=off)", sleepEnabledBuf, 2);
@@ -546,12 +547,8 @@ WiFiManagerParameter p_updateInfo(
   "</div>");
 
 // Loop timers
-// Loop timers
 static uint32_t g_lastWeatherUpdateMs = 0;
 static uint32_t g_lastCheckinMs = 0;
-
-// Manual trigger anti-spam
-static uint32_t g_lastManualCheckinMs = 0;
 
 
 // =====================================================
@@ -573,7 +570,7 @@ WiFiManagerParameter p_animTag("animTag", "Animation Tag (e.g., ABCD123)", animT
 
 // Runtime tag variable
 //Ryu01
-String g_animTag = "Bmw01";
+String g_animTag = "Testtl";
 
 
 // URL encoder helper
@@ -657,30 +654,6 @@ WiFiManagerParameter p_helpLink(
 // FORWARD DECLARATIONS (grouped)
 // =====================================================
 //
-
-
-
-
-// =====================================================
-// DEVICE-INITIATED CHECK-IN TRIGGERS (manual calls)
-// Paste this in your FORWARD DECLARATIONS section
-// =====================================================
-
-// One-shot check-in you can call from anywhere (button, serial command, etc)
-bool deviceCheckinNow(bool quiet, const char* reason = "manual");
-
-// Legacy alias used by button handler
-bool doManualCheckin(bool quiet = true);
-
-
-// Optional: show quick result overlay without breaking your main UI
-void deviceShowCheckinResultOverlay(bool ok, int httpCode, uint32_t rttMs, uint32_t ms = 1800);
-
-// Optional: simple rate limiter for manual triggers (prevents accidental double-press spam)
-bool deviceCheckinAllowedNow(uint32_t nowMs, uint32_t minGapMs = 5000);
-
-
-
 // Note: retained as-is for safety. Removing these without scanning the full
 // compilation unit can change build behavior in Arduino/C++.
 //
@@ -707,7 +680,8 @@ void applyWifiCustomParams(
   const int* adAnimSeconds = nullptr,
   const char* weatherBaseUrl = nullptr,
   const char* checkinBaseUrl = nullptr,
-  bool applyNow = true);
+  bool applyNow = true
+);
 
 
 
@@ -1299,11 +1273,10 @@ void applyBrightness() {
 }
 
 int getLocalDayOfMonth() {
-  time_t localEpoch = (time_t)timeClient.getEpochTime();  // already includes OpenWeather offset
-  struct tm* ti = gmtime(&localEpoch);                    // do NOT use localtime here
+  time_t raw = timeClient.getEpochTime();
+  struct tm* ti = localtime(&raw);
   return ti ? ti->tm_mday : -1;
 }
-
 
 int textWidthPx3x5(const String& s) {
   int n = s.length();
@@ -1547,41 +1520,6 @@ static void renderHoldPage3() {
   drawHoldPageNumber(3);
 }
 
-
-void deviceShowCheckinResultOverlay(bool ok, int httpCode, uint32_t rttMs, uint32_t ms) {
-  if (!dma_display) return;
-
-  if (ok) {
-    if (g_lastCheckinHadPairing) {
-      // Success + pairing code
-      showStatusScreen(
-        "PAIR READY",
-        "CODE:" + g_lastPairCode,
-        "ENTER ON WEB",
-        "OK");
-    } else {
-      // Success but no pairing code returned
-      showStatusScreen(
-        "CHECKIN OK",
-        "NO UPDATE",
-        "HTTP:" + String(httpCode),
-        "RTT:" + String((unsigned long)rttMs) + "MS");
-    }
-  } else {
-    showStatusScreen(
-      "CHECKIN FAIL",
-      "HTTP:" + String(httpCode),
-      "RTT:" + String((unsigned long)rttMs) + "MS",
-      "TRY AGAIN");
-  }
-
-  g_btnMsgUntilMs = millis() + ms;
-  g_btnOverlayActive = true;
-  g_btnNeedsFullRedraw = true;
-}
-
-
-
 bool serviceButtonHoldUI(uint32_t now) {
 #if !ENABLE_BUTTON_INPUT
   (void)now;
@@ -1625,8 +1563,6 @@ bool serviceButtonHoldUI(uint32_t now) {
     }
   }
 
-
-
   if (!g_btnStablePressed) return false;
 
   uint32_t heldMs = now - g_btnPressStartMs;
@@ -1660,60 +1596,24 @@ bool serviceButtonHoldUI(uint32_t now) {
   return true;
 }
 
+
 // =====================================================
-// UI MODE (manual override)
+// UI MODE HELPERS
 // =====================================================
-
-enum UiMode : uint8_t {
-  UI_WEATHER = 0,   // Normal behavior (weather, ads, sleep window)
-  UI_CLOCK   = 1,   // Clock-only
-  UI_ANIM    = 2,   // Animation-only (continuous)
-  UI_REGDEV  = 3    // One-shot: manual check-in / register device
-};
-
-static UiMode   g_uiMode            = UI_WEATHER;
-static uint32_t g_regdevConfirmAtMs = 0;  // 0 = no pending action
-
-
-static void serviceUiModeAnytime(uint32_t now) {
-  // Only care about delayed action for Register Device
-  if (g_uiMode == UI_REGDEV && g_regdevConfirmAtMs != 0) {
-    // Wrap-safe check: has 5s expired?
-    if ((int32_t)(now - g_regdevConfirmAtMs) >= 0) {
-      g_regdevConfirmAtMs = 0;  // prevent re-trigger
-
-      // Loud manual check-in, shows deviceShowCheckinResultOverlay
-      doManualCheckin(false);
-
-      // Treat like returning to normal with fresh timing
-      adPreviousMillis = millis();
-      screenDrawnOnce = false;
-      g_btnOverlayActive = true;
-      g_btnNeedsFullRedraw = true;
-    }
-  }
-}
-
-
-
-
 static void flashMode() {
   if (g_uiMode == UI_WEATHER) showStatusScreen("MODE", "WEATHER");
-  if (g_uiMode == UI_CLOCK)   showStatusScreen("MODE", "CLOCK");
-  if (g_uiMode == UI_ANIM)    showStatusScreen("MODE", "ALTERNATE");
-  if (g_uiMode == UI_REGDEV)  showStatusScreen("MODE", "REGISTER DEVICE");
+  if (g_uiMode == UI_CLOCK) showStatusScreen("MODE", "CLOCK");
+  if (g_uiMode == UI_ANIM) showStatusScreen("MODE", "ANIM");
   g_btnMsgUntilMs = millis() + 2000;
 }
 
 static void cycleUiMode() {
   uint32_t now = millis();
 
-  // 4 modes now: 0..3
-  g_uiMode = (UiMode)((g_uiMode + 1) % 4);
+  g_uiMode = (UiMode)((g_uiMode + 1) % 3);
 
   // Reset timeout by default
   g_uiModeUntilMs = 0;
-  g_regdevConfirmAtMs = 0;  // clear any previous pending reg action
 
   if (g_uiMode == UI_CLOCK) {
     adAnim.playing = false;
@@ -1730,20 +1630,14 @@ static void cycleUiMode() {
   }
 
   if (g_uiMode == UI_WEATHER) {
-    // Back to normal behavior
-    if (adAnim.playing) stopAnim(adAnim);  // land on weather, not ad
+    // Force weather screen immediately (avoid landing on ad animation)
+    if (adAnim.playing) stopAnim(adAnim);
 
     // Prevent ad from starting immediately after switch back
     adPreviousMillis = millis();
 
-    // Force a fresh weather draw
+    // Ensure weather redraw happens immediately
     screenDrawnOnce = false;
-  }
-
-  if (g_uiMode == UI_REGDEV) {
-    // Do NOT register immediately.
-    // Start a 5s confirmation window; if user cycles away, we cancel.
-    g_regdevConfirmAtMs = now + 5000UL;
   }
 
   g_btnOverlayActive = true;
@@ -1913,51 +1807,33 @@ void drawCharWithCustomFont(int16_t x, int16_t y, char c, uint16_t color, uint16
 // CLOCK (unchanged)
 // =====================================================
 void drawDigitalClock() {
-  // Do NOT call timeClient.update() here.
-  // Assume something else in your code (loop or a timer) calls timeClient.update() periodically.
+  String formattedTime = timeClient.getFormattedTime();
 
-  time_t localEpoch = (time_t)timeClient.getEpochTime();
-  if (localEpoch == 0) {
-    // Time not set yet, nothing to draw
-    return;
+  String hours = formattedTime.substring(0, 2);
+  String minutes = formattedTime.substring(3, 5);
+
+  int hoursInt = hours.toInt();
+  hoursInt = hoursInt % 12;
+  if (hoursInt == 0) hoursInt = 12;
+  hours = String(hoursInt);
+
+  if (hours.length() == 1) {
+    hours = " " + hours;
   }
 
-  // Epoch is already offset by g_tzOffsetSeconds via timeClient.setTimeOffset(...)
-  // So treat it as "local" and just break it down.
-  struct tm* ti = gmtime(&localEpoch);   // use gmtime, no extra TZ applied
-  if (!ti) return;
-
-  int hour   = ti->tm_hour;
-  int minute = ti->tm_min;
-
-  // 12-hour conversion
-  int hour12 = hour % 12;
-  if (hour12 == 0) hour12 = 12;
-
-  // "HH:MM", leading space if single digit hour
-  char timeBuf[6];  // "HH:MM" + null
-  snprintf(timeBuf, sizeof(timeBuf), "%2d:%02d", hour12, minute);
-
-  String displayTime = String(timeBuf);
-
+  String displayTime = hours + ":" + minutes;
   uint16_t colorPastelWhite = dma_display->color565(255, 255, 255);
-  uint16_t bgColor          = dma_display->color565(0, 0, 0);
+  uint16_t bgColor = dma_display->color565(0, 0, 0);
 
-  int charWidth = 4;                    // your custom font width
-  int numChars  = displayTime.length(); // should be 5
+  int charWidth = 4;
+  int numChars = displayTime.length();
   int totalWidth = numChars * charWidth;
 
   int xPosition = dma_display->width() - totalWidth;
   int yPosition = dma_display->height() - 6;
 
-  for (int i = 0; i < numChars; i++) {
-    drawCharWithCustomFont(
-      xPosition + (i * charWidth),
-      yPosition,
-      displayTime[i],
-      colorPastelWhite,
-      bgColor
-    );
+  for (unsigned int i = 0; i < displayTime.length(); i++) {
+    drawCharWithCustomFont(xPosition + (i * charWidth), yPosition, displayTime[i], colorPastelWhite, bgColor);
   }
 }
 
@@ -2014,44 +1890,28 @@ String fetchWeather() {
   }
 
   // Snapshot raw values first so we can see them before sanitize
-  String rawEp = buildWeatherEndpoint("weather");
+  String rawEp   = buildWeatherEndpoint("weather");
   String rawCity = weatherCity;
   String rawUnit = weatherUnits;
-  String rawKey = weatherApiKey;
+  String rawKey  = weatherApiKey;
 
   Serial.println("[WX][DBG] Raw config before sanitize:");
-  Serial.print("  rawEp   = '");
-  Serial.print(rawEp);
-  Serial.println("'");
-  Serial.print("  rawCity = '");
-  Serial.print(rawCity);
-  Serial.println("'");
-  Serial.print("  rawUnit = '");
-  Serial.print(rawUnit);
-  Serial.println("'");
-  Serial.print("  rawKey  = '");
-  Serial.print(rawKey);
-  Serial.println("'");
+  Serial.print  ("  rawEp   = '"); Serial.print(rawEp);   Serial.println("'");
+  Serial.print  ("  rawCity = '"); Serial.print(rawCity); Serial.println("'");
+  Serial.print  ("  rawUnit = '"); Serial.print(rawUnit); Serial.println("'");
+  Serial.print  ("  rawKey  = '"); Serial.print(rawKey);  Serial.println("'");
 
   // Snapshot + sanitize
-  String ep = _wxSanitize(rawEp);
+  String ep   = _wxSanitize(rawEp);
   String city = _wxSanitize(rawCity);
   String unit = _wxSanitize(rawUnit);
-  String key = _wxSanitize(rawKey);
+  String key  = _wxSanitize(rawKey);
 
   Serial.println("[WX][DBG] After _wxSanitize:");
-  Serial.print("  ep   = '");
-  Serial.print(ep);
-  Serial.println("'");
-  Serial.print("  city = '");
-  Serial.print(city);
-  Serial.println("'");
-  Serial.print("  unit = '");
-  Serial.print(unit);
-  Serial.println("'");
-  Serial.print("  key  = '");
-  Serial.print(key);
-  Serial.println("'");
+  Serial.print  ("  ep   = '"); Serial.print(ep);   Serial.println("'");
+  Serial.print  ("  city = '"); Serial.print(city); Serial.println("'");
+  Serial.print  ("  unit = '"); Serial.print(unit); Serial.println("'");
+  Serial.print  ("  key  = '"); Serial.print(key);  Serial.println("'");
 
   // Validate config early and identify which fields are bad
   bool bad = false;
@@ -2238,44 +2098,28 @@ String fetchForecast() {
   }
 
   // Snapshot raw values first, so we can see what they are before sanitizing
-  String rawEp = buildWeatherEndpoint("forecast");
+  String rawEp   = buildWeatherEndpoint("forecast");
   String rawCity = weatherCity;
   String rawUnit = weatherUnits;
-  String rawKey = weatherApiKey;
+  String rawKey  = weatherApiKey;
 
   Serial.println("[FC][DBG] Raw config before sanitize:");
-  Serial.print("  rawEp   = '");
-  Serial.print(rawEp);
-  Serial.println("'");
-  Serial.print("  rawCity = '");
-  Serial.print(rawCity);
-  Serial.println("'");
-  Serial.print("  rawUnit = '");
-  Serial.print(rawUnit);
-  Serial.println("'");
-  Serial.print("  rawKey  = '");
-  Serial.print(rawKey);
-  Serial.println("'");
+  Serial.print  ("  rawEp   = '"); Serial.print(rawEp);   Serial.println("'");
+  Serial.print  ("  rawCity = '"); Serial.print(rawCity); Serial.println("'");
+  Serial.print  ("  rawUnit = '"); Serial.print(rawUnit); Serial.println("'");
+  Serial.print  ("  rawKey  = '"); Serial.print(rawKey);  Serial.println("'");
 
   // Snapshot + sanitize
-  String ep = _wxSanitize(rawEp);
+  String ep   = _wxSanitize(rawEp);
   String city = _wxSanitize(rawCity);
   String unit = _wxSanitize(rawUnit);
-  String key = _wxSanitize(rawKey);
+  String key  = _wxSanitize(rawKey);
 
   Serial.println("[FC][DBG] After _wxSanitize:");
-  Serial.print("  ep   = '");
-  Serial.print(ep);
-  Serial.println("'");
-  Serial.print("  city = '");
-  Serial.print(city);
-  Serial.println("'");
-  Serial.print("  unit = '");
-  Serial.print(unit);
-  Serial.println("'");
-  Serial.print("  key  = '");
-  Serial.print(key);
-  Serial.println("'");
+  Serial.print  ("  ep   = '"); Serial.print(ep);   Serial.println("'");
+  Serial.print  ("  city = '"); Serial.print(city); Serial.println("'");
+  Serial.print  ("  unit = '"); Serial.print(unit); Serial.println("'");
+  Serial.print  ("  key  = '"); Serial.print(key);  Serial.println("'");
 
   bool bad = false;
   if (ep.length() == 0) {
@@ -2414,7 +2258,8 @@ String fetchForecast() {
       return "";
     }
 
-    if (!test["list"][0]["main"]["temp"].is<float>() || test["list"][0]["weather"][0]["description"].isNull()) {
+    if (!test["list"][0]["main"]["temp"].is<float>() ||
+        test["list"][0]["weather"][0]["description"].isNull()) {
       Serial.println("[FC][FAIL] JSON missing required fields");
       if (attempt < maxAttempts) {
         delay(60 + (uint32_t)(esp_random() % 90));
@@ -2763,17 +2608,16 @@ void updateCityScrollBand(const String& cityIn) {
 
 
 // =====================================================
-// DAY OF WEEK
+// DAY OF WEEK (unchanged)
 // =====================================================
-String getDayOfWeek(long utcTimestamp) {
-  // OpenWeather sunrise/sunset etc are UTC
-  time_t localEpoch = (time_t)(utcTimestamp + g_tzOffsetSeconds);
-  struct tm* timeinfo = gmtime(&localEpoch);    // again, not localtime
+String getDayOfWeek(long timestamp) {
+  struct tm* timeinfo;
+  time_t rawtime = (time_t)timestamp;
+  timeinfo = localtime(&rawtime);
 
-  if (!timeinfo) return "";
-
-  static const char* days[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-  return String(days[timeinfo->tm_wday]);
+  const char* weekdays[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+  String dayOfWeek = weekdays[timeinfo ? timeinfo->tm_wday : 0];
+  return dayOfWeek;
 }
 
 
@@ -2792,7 +2636,8 @@ void applyWifiCustomParams(
   const int* adAnimSeconds,
   const char* weatherBaseUrl,
   const char* checkinBaseUrl,
-  bool applyNow) {
+  bool applyNow
+) {
   // ----------------------------
   // City
   // ----------------------------
@@ -3631,7 +3476,7 @@ void updateAnim(FSAnimPlayer& p) {
     return;
   }
 
-  uint16_t frameDelay = p.frameDelayMs;  // fallback
+  uint16_t frameDelay = p.frameDelayMs; // fallback
   if (g_timelineLoaded && p.frameIndex >= 0 && p.frameIndex < g_timelineCount) {
     frameDelay = g_timelineDurMs[p.frameIndex];
   }
@@ -3792,144 +3637,40 @@ void showButton1sMessage() {
   showStatusScreen("BUTTON", "PRESSED", "1 SECOND");
 }
 
-
-
 void serviceButtonAnytime(uint32_t now) {
 #if !ENABLE_BUTTON_INPUT
-  // Button handling is disabled at compile time
   (void)now;
   return;
 #endif
-
-  // Simple debounced edge detection:
-  // - `reading` is the raw hardware state
-  // - we treat "pressed" as the transition from not-pressed -> pressed
-
-  static bool lastReading     = false;   // last raw reading
-  static bool stablePressed   = false;   // debounced state
-  static uint32_t changeMs    = 0;       // when raw reading last changed
-
   bool reading = buttonPressedNow();
 
-  // If the raw reading changes, start a debounce window
-  if (reading != lastReading) {
-    lastReading = reading;
-    changeMs = now;
-  }
-
-  // After BTN_DEBOUNCE_MS of stable input, accept it
-  if ((now - changeMs) > BTN_DEBOUNCE_MS) {
-    // Debounced state changed -> either just pressed or just released
-    if (reading != stablePressed) {
-      stablePressed = reading;
-
-      // Only care about the "just pressed" edge
-      if (stablePressed) {
-        showStatusScreen(
-          "BUTTON",
-          "PRESSED",
-          "",
-          ""
-        );
-
-        g_btnMsgUntilMs     = now + BTN_MSG_SHOW_MS;
-        g_btnOverlayActive  = true;
-        g_btnNeedsFullRedraw = true;
-      }
-    }
-  }
-}
-
-
-
-
-
-//Old code working for checkin
-void serviceButtonAnytime_old(uint32_t now) {
-#if !ENABLE_BUTTON_INPUT
-  // Button handling compiled out, avoid unused-parameter warning
-  (void)now;
-  return;
-#endif
-
-  // Raw instantaneous button reading (no debounce applied yet)
-  bool reading = buttonPressedNow();
-
-  // --------------------------------------------------
-  // Step 1: Debounce the raw reading
-  //   - If the raw reading changes, start a new debounce window
-  //   - Once the reading has been stable for BTN_DEBOUNCE_MS,
-  //     we treat it as a real "pressed" or "released" event
-  // --------------------------------------------------
   if (reading != g_btnLastReading) {
     g_btnLastReading = reading;
-    g_btnChangeMs = now;        // mark time of last edge
+    g_btnChangeMs = now;
   }
 
-  // Check if reading has been stable long enough to trust it
-  if ((now - g_btnChangeMs) > BTN_DEBOUNCE_MS) {
-    // If the stable state changed, we have a new press or release
+  if (now - g_btnChangeMs > BTN_DEBOUNCE_MS) {
     if (reading != g_btnStablePressed) {
       g_btnStablePressed = reading;
 
       if (g_btnStablePressed) {
-        // ===============================
-        // Button has just become PRESSED
-        // ===============================
-        g_btnPressStartMs = now;   // remember when press started
-        g_btn1sFired = false;      // clear the "1 second hint" flag
-        g_btnLongHandled = false;  // reserved for longer press actions
+        g_btnPressStartMs = now;
+        g_btnLongHandled = false;
+        g_btn1sFired = false;
       } else {
-        // ===============================
-        // Button has just been RELEASED
-        // ===============================
-        uint32_t heldMs = now - g_btnPressStartMs;
-
-        // For a press held between 1 second and HOLD_NO_ACTION_MS,
-        // run a manual check-in. Short taps and very long holds do nothing here.
-        if (heldMs >= BTN_HOLD_1S_MS && heldMs < HOLD_NO_ACTION_MS) {
-          bool ok = doManualCheckin(true);  // true = quiet check-in
-          Serial.printf("[BTN] manual checkin -> %s\n", ok ? "ok" : "fail");
-
-          // Show result overlay. This will:
-          //   - Show success or failure
-          //   - Include pairing code when present
-          //   - Stay up for 5000 ms
-          deviceShowCheckinResultOverlay(
-            ok,
-            g_lastCheckinHttpCode,
-            g_lastCheckinRttMs,
-            5000
-          );
-
-          // Force weather screen to redraw after overlay clears
-          if (g_uiMode == UI_WEATHER) {
-            screenDrawnOnce = false;
-          }
-        }
-
-        // Reset per-press flags for the next interaction
         g_btn1sFired = false;
         g_btnLongHandled = false;
       }
     }
   }
 
-  // --------------------------------------------------
-  // Step 2: While button is held, show a "hint" after 1 second
-  //
-  //   - Fires once per press, when held at least BTN_HOLD_1S_MS
-  //   - Tells the user to release the button to run check-in
-  // --------------------------------------------------
-  if (g_btnStablePressed &&
-      !g_btn1sFired &&
-      (now - g_btnPressStartMs >= BTN_HOLD_1S_MS)) {
-
+  if (g_btnStablePressed && !g_btn1sFired && (now - g_btnPressStartMs >= BTN_HOLD_1S_MS)) {
     g_btn1sFired = true;
 
-    showStatusScreen("CHECKIN", "RELEASE", "TO RUN");
-    g_btnMsgUntilMs     = now + BTN_MSG_SHOW_MS;
-    g_btnOverlayActive  = true;
+    showButton1sMessage();
+    g_btnMsgUntilMs = now + BTN_MSG_SHOW_MS;
+
+    g_btnOverlayActive = true;
     g_btnNeedsFullRedraw = true;
   }
 }
@@ -4189,60 +3930,55 @@ bool syncSettingsFromBackendAndOverwriteWiFi(const String& url) {
 
 bool checkInAndUpdateFromServer(const String& checkinUrl, bool quiet) {
   const uint32_t fnStartMs = millis();
-
-  auto fail = [&](const char* why, int httpCode, uint32_t rttMs, const String& detail = "") -> bool {
-    g_lastCheckinOk = false;
-    g_lastCheckinHadPairing = false;
-    g_lastPairCode = "";
-
-
-    g_lastCheckinHttpCode = httpCode;
-    g_lastCheckinRttMs = rttMs;
-    g_lastNetBlockMs = rttMs;
-    g_netBlockMsTotal += rttMs;
-    noteNetResult(false, rttMs);
-
-    Serial.printf("[CHK] FAIL: %s (http=%d rtt=%lums)\n", why, httpCode, (unsigned long)rttMs);
-    if (detail.length()) {
-      Serial.print("[CHK] detail: ");
-      Serial.println(detail);
-    }
-
-    if (!quiet) {
-      String l1 = "HTTP:" + String(httpCode);
-      String l2 = "RTT:" + String((unsigned long)rttMs) + "ms";
-      String l3 = why;
-      if (l3.length() > 15) l3 = l3.substring(0, 15);
-      showStatusScreen("CHECKIN", l1, l2, l3);
-      qDelay(false, 900);
-    }
-    return false;
+  static constexpr uint16_t STEP_PAUSE_MS = 10;  // set 0 to disable
+  auto stepPause = [&](uint16_t ms) {
+    if (ms == 0) return;
+    qDelay(quiet, ms);
   };
 
-  auto sanitizeSnippet = [](String s, size_t maxLen = 280) -> String {
-    s.replace("\r", " ");
-    s.replace("\n", " ");
-    s.trim();
-    if (s.length() > maxLen) s = s.substring(0, maxLen) + "...";
-    return s;
+  // Stage metrics
+  uint32_t stage_build_ms = 0;
+  uint32_t stage_begin_ms = 0;
+  uint32_t stage_post_ms = 0;
+  uint32_t stage_resp_ms = 0;
+  uint32_t stage_json_ms = 0;
+  uint32_t stage_apply_ms = 0;
+  uint32_t stage_dl_ms = 0;
+  uint32_t stage_commit_ms = 0;
+  uint32_t stage_save_ms = 0;
+  uint32_t stage_anim_ms = 0;
+
+  uint32_t worstStageMs = 0;
+  const char* worstStage = "none";
+
+  auto markStage = [&](const char* name, uint32_t dt) {
+    if (dt > worstStageMs) {
+      worstStageMs = dt;
+      worstStage = name;
+    }
+  };
+
+  auto fail = [&](const char* why, HTTPClient* http = nullptr) -> bool {
+    Serial.printf("[CHK] FAIL: %s\n", why);
+    if (http) http->end();
+    noteNetResult(false, millis() - fnStartMs);
+    return false;
   };
 
   if (netBackoffActive()) {
-    Serial.println("[CHK] Backoff active -> skip");
+    Serial.println("[CHK] Backoff active -> skip checkin");
     return false;
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
-    return fail("wifi_disconnected", -1000, 0);
-  }
-
   Serial.println("\n[CHK] checkInAndUpdateFromServer() start");
-  Serial.print("[CHK] POST URL: ");
-  Serial.println(checkinUrl);
-
   if (!quiet) {
     showStatusScreen("CHECKIN", "CONTACTING", "SERVER");
     qDelay(false, 50);
+  }
+  stepPause(STEP_PAUSE_MS);
+
+  if (WiFi.status() != WL_CONNECTED) {
+    return fail("WiFi not connected");
   }
 
   // -----------------------
@@ -4250,6 +3986,8 @@ bool checkInAndUpdateFromServer(const String& checkinUrl, bool quiet) {
   // -----------------------
   String body;
   {
+    uint32_t t0 = millis();
+
     uint64_t mac = ESP.getEfuseMac();
     uint32_t hi = (uint32_t)(mac >> 32);
     uint32_t lo = (uint32_t)(mac & 0xFFFFFFFF);
@@ -4258,6 +3996,7 @@ bool checkInAndUpdateFromServer(const String& checkinUrl, bool quiet) {
     snprintf(hardware_id, sizeof(hardware_id), "%04X%08X", (hi & 0xFFFF), lo);
 
     StaticJsonDocument<1536> req;
+    
     req["hardware_id"] = hardware_id;
     req["tag"] = g_animTag;
     req["bin_sha256"] = g_binSha256;
@@ -4290,355 +4029,276 @@ bool checkInAndUpdateFromServer(const String& checkinUrl, bool quiet) {
                                      ? (uint32_t)(g_netBackoffUntilMs - millis())
                                      : 0;
 
+    static bool sentBootMeta = false;
+    if (!sentBootMeta) {
+      dbg["sdk"] = ESP.getSdkVersion();
+      dbg["reset_reason"] = (int)esp_reset_reason();
+      sentBootMeta = true;
+    }
+
     serializeJson(req, body);
+
+    stage_build_ms = millis() - t0;
+    markStage("build", stage_build_ms);
+
+    Serial.print("[CHK] POST URL: ");
+    Serial.println(checkinUrl);
     Serial.print("[CHK] body bytes: ");
     Serial.println(body.length());
   }
 
-  // -----------------------
-  // HTTP with retries
-  // -----------------------
-  const int maxAttempts = 3;  // 1 + up to 2 retries
-  int lastCode = -9999;
-  String lastErr;
-  String lastRespSnippet;
-  uint32_t lastRtt = 0;
-  String respBody;
+  stepPause(STEP_PAUSE_MS);
 
-  for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
-    HTTPClient http;
-    http.setReuse(false);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setConnectTimeout(1500);
-    http.setTimeout(3500);  // give Flask a bit more time than 1200ms
+  // -----------------------
+  // HTTP transaction
+  // -----------------------
+  HTTPClient http;
+  http.setTimeout(1200);
+  http.setConnectTimeout(700);
+  http.setReuse(false);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-    static WiFiClientSecure chkSecure;
-    static WiFiClient chkPlain;
+  static WiFiClientSecure chkSecure;
+  static WiFiClient chkPlain;
+
+  {
+    uint32_t t = millis();
 
     bool beginOk = false;
     if (checkinUrl.startsWith("https://")) {
       chkSecure.setInsecure();
       chkSecure.setHandshakeTimeout(30);
-      chkSecure.setTimeout(4);
+      chkSecure.setTimeout(3);
       beginOk = http.begin(chkSecure, checkinUrl);
     } else {
-      chkPlain.setTimeout(4);
+      chkPlain.setTimeout(3);
       beginOk = http.begin(chkPlain, checkinUrl);
     }
 
     if (!beginOk) {
-      lastCode = -1;
-      lastErr = "http.begin failed";
-      Serial.printf("[CHK] attempt %d/%d begin failed\n", attempt, maxAttempts);
-      http.end();
-
-      if (attempt < maxAttempts) {
-        delay(120 + (uint32_t)(esp_random() % 180));
-        continue;
-      }
-      return fail("begin_failed", lastCode, 0, lastErr);
+      return fail("http.begin failed", &http);
     }
 
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("Accept", "application/json");
-
-    uint32_t t0 = millis();
-    int code = http.POST((uint8_t*)body.c_str(), body.length());
-    uint32_t rtt = millis() - t0;
-
-    lastCode = code;
-    lastRtt = rtt;
-    g_lastCheckinHttpCode = code;
-    g_lastCheckinRttMs = rtt;
-
-    Serial.printf("[CHK] attempt %d/%d status=%d rtt=%lums\n",
-                  attempt, maxAttempts, code, (unsigned long)rtt);
-
-    // Capture body even on non-200 (super important for 500 debugging)
-    String bodyMaybe = http.getString();
-    if (bodyMaybe.length()) {
-      lastRespSnippet = sanitizeSnippet(bodyMaybe, 320);
-      Serial.print("[CHK] resp snippet: ");
-      Serial.println(lastRespSnippet);
-    } else {
-      lastRespSnippet = "";
-      Serial.println("[CHK] resp snippet: <empty>");
-    }
-
-    if (code == HTTP_CODE_OK) {
-      respBody = bodyMaybe;
-      http.end();
-      // success path exits retry loop
-      break;
-    }
-
-    lastErr = HTTPClient::errorToString(code);
-
-    bool retryable =
-      (code < 0) ||                                     // transport errors
-      (code == 408) ||                                  // timeout
-      (code == 425) || (code == 429) || (code >= 500);  // server transient class
-
-    http.end();
-
-    if (attempt < maxAttempts && retryable) {
-      uint32_t backoffMs = (uint32_t)(150 * attempt) + (uint32_t)(esp_random() % 200);
-      Serial.printf("[CHK] retrying in %lums (retryable status)\n", (unsigned long)backoffMs);
-      delay(backoffMs);
-      continue;
-    }
-
-    // non-retryable or out of retries
-    String detail = lastErr;
-    if (lastRespSnippet.length()) detail += " | " + lastRespSnippet;
-    return fail("post_failed", code, rtt, detail);
+    stage_begin_ms = millis() - t;
+    markStage("begin", stage_begin_ms);
   }
 
-  // Must have a 200 payload by here
-  if (respBody.isEmpty()) {
-    return fail("empty_200_body", lastCode, lastRtt, lastErr);
+  http.addHeader("Content-Type", "application/json");
+
+  int code = 0;
+  {
+    uint32_t t = millis();
+    code = http.POST((uint8_t*)body.c_str(), body.length());
+    stage_post_ms = millis() - t;
+    markStage("post", stage_post_ms);
   }
 
+  g_lastCheckinRttMs = stage_post_ms;
+  g_lastCheckinHttpCode = code;
+  g_lastNetBlockMs = stage_post_ms;
+  g_netBlockMsTotal += stage_post_ms;
+
+  Serial.printf("[CHK] HTTP status=%d, postRTT=%ums\n", code, (unsigned)stage_post_ms);
+
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[CHK] POST error: %s\n", http.errorToString(code).c_str());
+    return fail("HTTP_CODE_OK not returned", &http);
+  }
+
+  String respBody;
+  {
+    uint32_t t = millis();
+    respBody = http.getString();
+    stage_resp_ms = millis() - t;
+    markStage("getString", stage_resp_ms);
+  }
+  http.end();
+
+  Serial.printf("[CHK] resp bytes=%u\n", (unsigned)respBody.length());
+  stepPause(STEP_PAUSE_MS);
+
   // -----------------------
-  // Parse response
+  // Parse/validate response
   // -----------------------
-  DynamicJsonDocument resp(6144);
-  DeserializationError jerr = deserializeJson(resp, respBody);
-  if (jerr) {
-    String detail = String("json_parse: ") + jerr.c_str();
-    if (lastRespSnippet.length()) detail += " | " + lastRespSnippet;
-    return fail("json_invalid", lastCode, lastRtt, detail);
+  DynamicJsonDocument resp(4096);
+  {
+    uint32_t t = millis();
+    DeserializationError err = deserializeJson(resp, respBody);
+    stage_json_ms = millis() - t;
+    markStage("json", stage_json_ms);
+
+    if (err) {
+      Serial.print("[CHK] JSON parse FAILED: ");
+      Serial.println(err.c_str());
+      return fail("JSON parse failed");
+    }
   }
 
   bool okFlag = resp["ok"] | false;
-  if (!okFlag) {
-    String msg = resp["error"] | resp["message"] | "ok_false";
-    return fail("server_rejected", lastCode, lastRtt, msg);
-  }
+  if (!okFlag) return fail("resp.ok=false");
 
-  // Pairing info (if present)
-  bool pairingPending = resp["pairing"]["pending"] | false;
-  String pairCode = String((const char*)(resp["pairing"]["code"] | ""));
-  pairCode.trim();
-
-  g_lastCheckinHadPairing = pairingPending && pairCode.length() > 0;
-  g_lastPairCode = g_lastCheckinHadPairing ? pairCode : "";
-  g_lastCheckinOk = true;
-
-
-  // -----------------------
-  // Apply tag if returned
-  // -----------------------
   const char* newTag = resp["tag"] | "";
-  if (newTag && *newTag) {
-    String clean = cleanTagFromString(String(newTag));
-    if (clean.length()) {
-      strncpy(animTagBuf, clean.c_str(), sizeof(animTagBuf));
-      animTagBuf[sizeof(animTagBuf) - 1] = '\0';
-      p_animTag.setValue(animTagBuf, 17);
-      g_animTag = clean;
-      applyTagAndPaths(g_animTag);
-    }
-  }
-
   bool wantBin = resp["action"]["download_bin"] | false;
-  if (!wantBin) {
-    noteNetResult(true, millis() - fnStartMs);
-    Serial.printf("[CHK] OK: no update, total=%lums\n", (unsigned long)(millis() - fnStartMs));
-    if (!quiet) {
-      showStatusScreen("CHECKIN", "NO UPDATE", "OK");
-      qDelay(false, 300);
-    }
-    return true;
-  }
 
+  // BIN metadata
   const char* binUrl = resp["bin"]["url"] | "";
   size_t expectedSize = resp["bin"]["size"] | 0;
   const char* newSha = resp["bin"]["sha256"] | "";
 
-  if (!binUrl || !*binUrl) {
-    return fail("missing_bin_url", lastCode, lastRtt);
+  // JSON timeline metadata (optional)
+  const char* jsonUrl = resp["json"]["url"] | "";
+  size_t jsonExpectedSize = resp["json"]["size"] | 0;
+  bool hasJson = (jsonUrl && *jsonUrl);
+
+  // -----------------------
+  // Apply returned tag first
+  // -----------------------
+  {
+    uint32_t t = millis();
+
+    if (newTag && *newTag) {
+      String clean = cleanTagFromString(String(newTag));
+      if (clean.length()) {
+        strncpy(animTagBuf, clean.c_str(), sizeof(animTagBuf));
+        animTagBuf[sizeof(animTagBuf) - 1] = '\0';
+        p_animTag.setValue(animTagBuf, 17);
+
+        g_animTag = clean;
+        applyTagAndPaths(g_animTag);
+      }
+    }
+
+    stage_apply_ms = millis() - t;
+    markStage("applyTag", stage_apply_ms);
   }
+
+  // No update path
+  if (!wantBin) {
+    if (!quiet) {
+      showStatusScreen("CHECKIN", "NO UPDATES", "FOUND");
+      qDelay(false, 300);
+    }
+
+    Serial.printf(
+      "[CHK][TIMING] total=%ums worst=%s(%ums) build=%u begin=%u post=%u get=%u json=%u apply=%u\n",
+      (unsigned)(millis() - fnStartMs),
+      worstStage, (unsigned)worstStageMs,
+      (unsigned)stage_build_ms, (unsigned)stage_begin_ms, (unsigned)stage_post_ms,
+      (unsigned)stage_resp_ms, (unsigned)stage_json_ms, (unsigned)stage_apply_ms);
+
+    noteNetResult(true, millis() - fnStartMs);
+    return true;
+  }
+
+  // Update requested but no URL
+  if (!binUrl || !*binUrl) return fail("missing bin.url");
 
   if (!quiet) {
-    showStatusScreen("CHECKIN", "UPDATE", "DOWNLOADING");
-    qDelay(false, 120);
+    showStatusScreen("CHECKIN", "UPDATE", "FOUND", "DOWNLOADING");
+    qDelay(false, 150);
   }
 
-  String finalPath = (adAnim.path.length() && adAnim.path[0] == '/') ? adAnim.path : "/ryu.bin";
+  // Final BIN path tied to active tag
+  String finalPath = String(adAnim.path);
+  if (finalPath.length() == 0 || finalPath[0] != '/') {
+    finalPath = "/ryu.bin";
+    adAnim.path = "/ryu.bin";
+  }
 
+  // -----------------------
+  // Download + commit BIN
+  // -----------------------
+  recoverTempAndBackup(finalPath);
   cleanupStaleTemp(finalPath);
 
-  uint32_t dlStart = millis();
-  bool dlOk = downloadToTempFile(String(binUrl), finalPath, expectedSize, 15000, true, g_animTag);
-  uint32_t dlMs = millis() - dlStart;
+  bool ok = false;
+  {
+    uint32_t t = millis();
+    ok = downloadToTempFile(
+      String(binUrl),
+      finalPath,
+      expectedSize,
+      30000,
+      String(binUrl).startsWith("https://"),
+      g_animTag);
+    stage_dl_ms = millis() - t;
+    markStage("download_bin", stage_dl_ms);
+  }
+  if (!ok) return fail("download bin failed");
 
-  if (!dlOk) {
-    return fail("download_failed", lastCode, dlMs);
+  {
+    uint32_t t = millis();
+    ok = commitTempFile(finalPath);
+    stage_commit_ms = millis() - t;
+    markStage("commit_bin", stage_commit_ms);
+  }
+  if (!ok) return fail("commit bin failed");
+
+  // -----------------------
+  // Download + commit JSON (optional)
+  // -----------------------
+  if (hasJson) {
+    recoverTempAndBackup(g_tagJsonPath);
+    cleanupStaleTemp(g_tagJsonPath);
+
+    uint32_t t2 = millis();
+    ok = downloadToTempFile(
+      String(jsonUrl),
+      g_tagJsonPath,
+      jsonExpectedSize,
+      15000,
+      String(jsonUrl).startsWith("https://"),
+      g_animTag);
+    uint32_t jsonDlMs = millis() - t2;
+    markStage("download_json", jsonDlMs);
+
+    if (!ok) return fail("download json failed");
+
+    t2 = millis();
+    ok = commitTempFile(g_tagJsonPath);
+    uint32_t jsonCommitMs = millis() - t2;
+    markStage("commit_json", jsonCommitMs);
+
+    if (!ok) return fail("commit json failed");
+  } else {
+    Serial.println("[CHK] No json.url provided; fallback/default frame timing will be used.");
   }
 
-  uint32_t cmStart = millis();
-  bool commitOk = commitTempFile(finalPath);
-  uint32_t cmMs = millis() - cmStart;
+  // -----------------------
+  // Persist + restart anim
+  // -----------------------
+  g_binSha256 = String(newSha ? newSha : "");
+  g_animVer = resp["animVer"] | g_animVer;
 
-  if (!commitOk) {
-    return fail("commit_failed", lastCode, cmMs);
+  {
+    uint32_t t = millis();
+    saveConfig();
+    stage_save_ms = millis() - t;
+    markStage("saveConfig", stage_save_ms);
   }
 
-  if (newSha && *newSha) g_binSha256 = String(newSha);
-  saveConfig();
+  {
+    uint32_t t = millis();
+    stopAnim(adAnim);
+    startAnim(adAnim);
+    stage_anim_ms = millis() - t;
+    markStage("restart_anim", stage_anim_ms);
+  }
 
-  // Reload animation
-  stopAnim(adAnim);
-  startAnim(adAnim);
+  if (!quiet) {
+    showStatusScreen("CHECKIN", "UPDATE", "APPLIED");
+    qDelay(false, 250);
+  }
+
+  Serial.printf(
+    "[CHK][TIMING] total=%ums worst=%s(%ums) build=%u begin=%u post=%u get=%u json=%u apply=%u dl=%u commit=%u save=%u anim=%u\n",
+    (unsigned)(millis() - fnStartMs),
+    worstStage, (unsigned)worstStageMs,
+    (unsigned)stage_build_ms, (unsigned)stage_begin_ms, (unsigned)stage_post_ms,
+    (unsigned)stage_resp_ms, (unsigned)stage_json_ms, (unsigned)stage_apply_ms,
+    (unsigned)stage_dl_ms, (unsigned)stage_commit_ms, (unsigned)stage_save_ms, (unsigned)stage_anim_ms);
 
   noteNetResult(true, millis() - fnStartMs);
-
-  Serial.printf("[CHK] SUCCESS total=%lums download=%lums commit=%lums\n",
-                (unsigned long)(millis() - fnStartMs),
-                (unsigned long)dlMs,
-                (unsigned long)cmMs);
-
-  if (!quiet) {
-    showStatusScreen("CHECKIN", "UPDATE OK", "APPLIED");
-    qDelay(false, 450);
-  }
-
-  return true;
-}
-
-
-
-
-// =====================================================
-// OPTIONAL: two convenience wrappers (quiet vs loud)
-// Paste wherever you like (same area as deviceCheckinNow)
-// =====================================================
-
-bool deviceCheckinLoud(const char* reason = "manual_loud") {
-  // If you want a small spam guard:
-  // if (!deviceCheckinAllowedNow(millis(), 5000)) return false;
-  return deviceCheckinNow(false, reason);
-}
-
-bool deviceCheckinQuiet(const char* reason = "manual_quiet") {
-  // if (!deviceCheckinAllowedNow(millis(), 5000)) return false;
-  return deviceCheckinNow(true, reason);
-}
-
-
-
-// =====================================================
-// DEVICE-INITIATED CHECK-IN TRIGGERS (manual calls)
-// Paste this near your CHECK-IN + UPDATE section (below checkInAndUpdateFromServer is perfect)
-// =====================================================
-
-bool deviceCheckinNow(bool quiet, const char* reason) {
-  uint32_t now = millis();
-
-  Serial.println();
-  Serial.println("[DEVCHK] ===== deviceCheckinNow() =====");
-  Serial.printf("[DEVCHK] reason=%s quiet=%d\n", reason ? reason : "null", quiet ? 1 : 0);
-
-  // Add the simple manual/rapid-trigger limiter from your other version
-  if (!deviceCheckinAllowedNow(now, 5000)) {
-    Serial.println("[DEVCHK] manual rate-limited");
-    return false;
-  }
-
-  // Safety gates
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[DEVCHK] WiFi not connected");
-    g_lastCheckinHttpCode = 0;
-    g_lastCheckinRttMs = 0;
-
-    if (!quiet) deviceShowCheckinResultOverlay(false, 0, 0, 1600);
-    return false;
-  }
-
-  if (netBackoffActive()) {
-    uint32_t remain = (uint32_t)(g_netBackoffUntilMs - now);
-    Serial.printf("[DEVCHK] Backoff active, remaining=%ums\n", (unsigned)remain);
-
-    if (!quiet) {
-      showStatusScreen("CHECKIN", "BACKOFF", "WAIT", String(remain) + "ms");
-      g_btnMsgUntilMs = millis() + 1600;
-      g_btnOverlayActive = true;
-      g_btnNeedsFullRedraw = true;
-    }
-    return false;
-  }
-
-  if (!canDoNetworkNow(now)) {
-    Serial.println("[DEVCHK] Skipped, canDoNetworkNow() returned false");
-    if (!quiet) {
-      showStatusScreen("CHECKIN", "SKIPPED", "BUSY LOOP");
-      g_btnMsgUntilMs = millis() + 1400;
-      g_btnOverlayActive = true;
-      g_btnNeedsFullRedraw = true;
-    }
-    return false;
-  }
-
-  String url = buildCheckinUrl();
-  Serial.print("[DEVCHK] url=");
-  Serial.println(url);
-
-  uint32_t t0 = millis();
-  bool ok = checkInAndUpdateFromServer(url, quiet);
-  uint32_t dt = millis() - t0;
-
-  // Keep diagnostics coherent
-  if (g_lastCheckinRttMs == 0) g_lastCheckinRttMs = dt;
-  g_lastCheckinMs = millis();
-
-  Serial.printf("[DEVCHK] done ok=%d http=%d rtt=%ums\n",
-                ok ? 1 : 0, g_lastCheckinHttpCode, (unsigned)g_lastCheckinRttMs);
-
-  if (!quiet) {
-    deviceShowCheckinResultOverlay(ok, g_lastCheckinHttpCode, g_lastCheckinRttMs, 1800);
-  }
-
-  // Restore weather on next pass if needed
-  if (g_uiMode == UI_WEATHER) {
-    screenDrawnOnce = false;
-  }
-
-  return ok;
-}
-
-// Legacy alias used by button handler – simple wrapper.
-bool doManualCheckin(bool quiet) {
-  // You can change "button" to "manual" or whatever label you like for logging.
-  return deviceCheckinNow(quiet, "button");
-}
-
-static void doManualCheckin_OLD(bool quiet) {
-  if (WiFi.status() != WL_CONNECTED) {
-    // Optional tiny feedback
-    if (!quiet) showStatusScreen("CHECKIN", "WIFI", "NOT CONNECT");
-    return;
-  }
-
-  // Reset cumulative net timing window if you want "since last checkin"
-  g_netBlockMsTotal = 0;
-
-  String url = buildCheckinUrl();
-  bool ok = checkInAndUpdateFromServer(url, quiet);
-
-  // Optional non-quiet confirmation
-  if (!quiet) {
-    if (ok) showStatusScreen("CHECKIN", "DONE", "OK");
-    else showStatusScreen("CHECKIN", "DONE", "FAIL");
-  }
-}
-
-
-bool deviceCheckinAllowedNow(uint32_t nowMs, uint32_t minGapMs) {
-  if ((uint32_t)(nowMs - g_lastManualCheckinMs) < minGapMs) {
-    return false;
-  }
-  g_lastManualCheckinMs = nowMs;
   return true;
 }
 
@@ -4874,7 +4534,7 @@ void setup() {
 
   // Loud check-in in setup (UI + debug pacing preserved)
   //  checkInAndUpdateFromServer("http://www.auroradisplay.ca/api/checkin", false);
-  checkInAndUpdateFromServer(buildCheckinUrl(), false);
+checkInAndUpdateFromServer(buildCheckinUrl(), false);
 
 
   // Boot sequence complete
@@ -4917,17 +4577,6 @@ void loop() {
   }
   g_lastLoopStamp = now;
 
-
-  //button
-  uint32_t t0 = millis();
-
-  //uint32_t now = millis();
-  //serviceButtonAnytime(now);  // Manual check-in trigger (1s hold + release)
-  serviceButtonHoldUI(now);   // Hold UI pages + mode cycling
-  serviceUiModeAnytime(now);
-
-
-
   // Auto-return to weather when a temporary mode expires
   if (g_uiMode != UI_WEATHER && g_uiModeUntilMs != 0 && (int32_t)(now - g_uiModeUntilMs) >= 0) {
     g_uiMode = UI_WEATHER;
@@ -4968,6 +4617,10 @@ void loop() {
   }
 
 
+  // Hold pages own the screen when active
+  if (serviceButtonHoldUI(now)) {
+    return;
+  }
 
   // Overlay gate
   if (g_btnOverlayActive) {
@@ -5095,8 +4748,6 @@ void loop() {
 
         if (!forecastReady) {
           WRAP_BLOCK("updateForecastAndStore", updateForecastAndStore());
-          //Lets service time on forecast
-          serviceTime();
         }
 
         bool okWx = false;
@@ -5185,9 +4836,4 @@ void loop() {
       WRAP_DISPLAY("drawDigitalClock", drawDigitalClock());
     }
   }
-
-
-  //button
-  uint32_t dt = millis() - t0;
-  if (dt > g_loopMaxMs) g_loopMaxMs = dt;
 }
